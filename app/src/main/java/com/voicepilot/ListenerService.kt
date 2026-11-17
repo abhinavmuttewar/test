@@ -25,6 +25,7 @@ import android.util.Log
 import com.voicepilot.agent.ClaudeAgent
 import com.voicepilot.agent.Command
 import com.voicepilot.agent.CommandParser
+import com.voicepilot.agent.normalizePhrase
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
@@ -206,9 +207,19 @@ class ListenerService : Service() {
         startWakeListening() // so "hey phone, stop" works while a task runs
         worker.execute {
             val reply = try {
-                if (command != null && runOffline(command, phone)) null else runAgent(text, phone)
+                val memory = PrefsMemory.get(this)
+                val shortcut = memory.shortcuts()[normalizePhrase(text)]
+                when {
+                    shortcut != null -> runAgent("$text (saved shortcut: $shortcut)", phone)
+                    command != null && runOffline(command, phone) -> null
+                    else -> {
+                        if (command != null) memory.logError("Offline command failed, used AI: \"$text\" -> $command")
+                        runAgent(text, phone)
+                    }
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Command failed", e)
+                PrefsMemory.get(this).logError("\"$text\" failed: ${e.javaClass.simpleName}: ${e.message}")
                 if (isHindi(text)) "माफ़ कीजिए, कुछ गड़बड़ हो गई।" else "Sorry, something went wrong: ${e.message?.take(80)}"
             }
             main.post {
@@ -241,7 +252,7 @@ class ListenerService : Service() {
             return if (isHindi(text)) "यह कमांड समझने के लिए ऐप में API key डालें।"
             else "I only know basic commands. Add your Claude API key in the app for everything else."
         }
-        if (agent == null || agentKey != key) { agent = ClaudeAgent(key, phone); agentKey = key }
+        if (agent == null || agentKey != key) { agent = ClaudeAgent(key, phone, PrefsMemory.get(this)); agentKey = key }
         status("Working…")
         return agent!!.run(text) { step -> main.post { status("Working: $step") } }
     }

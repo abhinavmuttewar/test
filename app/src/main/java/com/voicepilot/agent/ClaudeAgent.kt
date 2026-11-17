@@ -17,7 +17,11 @@ import com.anthropic.models.beta.messages.MessageCreateParams
  * executes the tool calls Claude returns, and loops until Claude replies with text.
  * Call [run] off the main thread; it blocks on network calls.
  */
-class ClaudeAgent(apiKey: String, private val phone: PhoneController) {
+class ClaudeAgent(
+    apiKey: String,
+    private val phone: PhoneController,
+    private val memory: Memory,
+) {
 
     private val client: AnthropicClient = AnthropicOkHttpClient.builder().apiKey(apiKey).build()
 
@@ -40,12 +44,14 @@ class ClaudeAgent(apiKey: String, private val phone: PhoneController) {
             runLoop(request, onStatus)
         } catch (e: Exception) {
             history.clear() // history may end with an unanswered tool call
+            memory.logError("Request \"$request\" crashed: ${e.javaClass.simpleName}: ${e.message}")
             throw e
         }
     }
 
     private fun runLoop(request: String, onStatus: (String) -> Unit): String {
-        history.add(listOf(text("User said: \"$request\"\n\nCurrent screen:\n${phone.describeScreen()}")))
+        val learned = if (history.isEmpty()) memoryBlock() else ""
+        history.add(listOf(text("${learned}User said: \"$request\"\n\nCurrent screen:\n${phone.describeScreen()}")))
 
         repeat(MAX_STEPS) {
             if (cancelled) { history.clear(); return "Stopped." }
@@ -70,6 +76,7 @@ class ClaudeAgent(apiKey: String, private val phone: PhoneController) {
                 } catch (e: Exception) {
                     false to "Error: ${e.message}"
                 }
+                if (!ok) memory.logError("Request \"$request\": ${use.name()} ${use._input()} failed. $note")
                 if (use.name() != "wait") Thread.sleep(SETTLE_MS)
                 BetaContentBlockParam.ofToolResult(
                     BetaToolResultBlockParam.builder()
@@ -81,6 +88,7 @@ class ClaudeAgent(apiKey: String, private val phone: PhoneController) {
             }
             history.add(results)
         }
+        memory.logError("Request \"$request\": gave up after $MAX_STEPS steps")
         return "I stopped after $MAX_STEPS steps. Please try a simpler request."
     }
 
@@ -115,8 +123,27 @@ class ClaudeAgent(apiKey: String, private val phone: PhoneController) {
             "scroll" -> phone.scroll(str("direction"), int("element_id")) to ""
             "global_action" -> phone.globalAction(str("action")) to ""
             "open_app" -> phone.openApp(str("app_name")).let { it to if (it) "" else "App not found." }
+            "remember" -> { memory.addNote(str("note")); true to "Saved." }
+            "forget" -> memory.removeNote((int("note_number") ?: 0) - 1) to ""
+            "save_shortcut" -> { memory.addShortcut(str("phrase"), str("instruction")); true to "Saved." }
+            "delete_shortcut" -> memory.removeShortcut(str("phrase")) to ""
             "wait" -> { Thread.sleep(((input["seconds"] as? Number)?.toLong() ?: 1L).coerceIn(1, 10) * 1000); true to "" }
             else -> false to "Unknown tool $name"
+        }
+    }
+
+    private fun memoryBlock(): String {
+        val notes = memory.notes()
+        val shortcuts = memory.shortcuts()
+        if (notes.isEmpty() && shortcuts.isEmpty()) return ""
+        return buildString {
+            append("What you have learned so far (follow it):\n")
+            notes.forEachIndexed { i, n -> append("${i + 1}. $n\n") }
+            if (shortcuts.isNotEmpty()) {
+                append("Shortcuts:\n")
+                shortcuts.forEach { (p, ins) -> append("- \"$p\" -> $ins\n") }
+            }
+            append("\n")
         }
     }
 
@@ -147,6 +174,14 @@ class ClaudeAgent(apiKey: String, private val phone: PhoneController) {
               unless they explicitly asked for that exact action.
             - If the screen is a lock screen asking for a PIN or password, tell the user to unlock the phone.
             - If you get stuck after a few attempts, say what blocked you.
+
+            Learning (you get better with practice):
+            - When the user teaches a preference or corrects you ("no, Mom is saved as Mummy", "always use YouTube Music"),
+              call remember with a short, general note, then continue.
+            - When a task needed trial and error, remember a one-line recipe of what finally worked
+              (e.g. "Flashlight: open quick settings, tap Flashlight"). Don't save notes for things that worked first time.
+            - When the user says "when I say X, do Y", call save_shortcut. Use forget / delete_shortcut when asked to unlearn.
+            - If a learned note turns out to be wrong, forget it and remember the corrected version.
         """.trimIndent()
 
         private fun tool(name: String, desc: String, props: Map<String, Map<String, Any>>, required: List<String>) =
@@ -200,6 +235,23 @@ class ClaudeAgent(apiKey: String, private val phone: PhoneController) {
             tool(
                 "open_app", "Launch an installed app by its name, e.g. \"WhatsApp\", \"Camera\".",
                 mapOf("app_name" to mapOf("type" to "string")), listOf("app_name"),
+            ),
+            tool(
+                "remember", "Save a lesson for future requests: a preference, correction, or recipe for a task.",
+                mapOf("note" to mapOf("type" to "string")), listOf("note"),
+            ),
+            tool(
+                "forget", "Delete a learned note by its number.",
+                mapOf("note_number" to mapOf("type" to "integer")), listOf("note_number"),
+            ),
+            tool(
+                "save_shortcut", "Make a spoken phrase run an instruction, e.g. phrase \"good night\" -> \"turn on Do Not Disturb and set an alarm for 7 am\".",
+                mapOf("phrase" to mapOf("type" to "string"), "instruction" to mapOf("type" to "string")),
+                listOf("phrase", "instruction"),
+            ),
+            tool(
+                "delete_shortcut", "Delete a spoken shortcut.",
+                mapOf("phrase" to mapOf("type" to "string")), listOf("phrase"),
             ),
             tool(
                 "wait", "Wait for content to load.",

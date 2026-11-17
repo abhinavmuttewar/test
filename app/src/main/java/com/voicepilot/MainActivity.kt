@@ -25,6 +25,7 @@ class MainActivity : Activity() {
 
     private lateinit var prefs: Prefs
     private lateinit var status: TextView
+    private lateinit var learned: TextView
     private val languages = listOf("auto" to "English + Hindi (auto)", "en-IN" to "English", "hi-IN" to "हिन्दी")
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -75,6 +76,18 @@ class MainActivity : Activity() {
             refresh()
         })
 
+        root.addView(label("What VoicePilot has learned"))
+        learned = TextView(this).apply { setTextIsSelectable(true) }
+        root.addView(learned)
+        root.addView(button("Share error log (send it to Claude Code to fix the app)") { shareErrors() })
+        root.addView(button("Forget everything learned") {
+            android.app.AlertDialog.Builder(this)
+                .setMessage("Delete all learned notes, shortcuts and the error log?")
+                .setPositiveButton("Delete") { _, _ -> PrefsMemory.get(this).clearAll(); refresh() }
+                .setNegativeButton("Cancel", null)
+                .show()
+        })
+
         setContentView(ScrollView(this).apply { addView(root) })
     }
 
@@ -93,7 +106,27 @@ class MainActivity : Activity() {
                 ${mark(prefs.apiKey.isNotBlank())} Claude API key
                 ${mark(ListenerService.running)} Listening for "${prefs.wakePhrase}"
             """.trimIndent()
+            val mem = PrefsMemory.get(this)
+            val notes = mem.notes().mapIndexed { i, n -> "${i + 1}. $n" }
+            val shortcuts = mem.shortcuts().map { (p, ins) -> "\"$p\" → $ins" }
+            learned.text = buildString {
+                append(if (notes.isEmpty()) "No notes yet. Correct it or teach it by voice." else notes.joinToString("\n"))
+                if (shortcuts.isNotEmpty()) append("\n\nShortcuts:\n").append(shortcuts.joinToString("\n"))
+                append("\n\nErrors logged: ${mem.errors().size}")
+            }
         }, 300)
+    }
+
+    private fun shareErrors() {
+        val mem = PrefsMemory.get(this)
+        val report = buildString {
+            append("VoicePilot error log (${Build.MODEL}, Android ${Build.VERSION.RELEASE})\n\n")
+            append(mem.errors().ifEmpty { listOf("No errors logged.") }.joinToString("\n"))
+            append("\n\nLearned notes:\n").append(mem.notes().joinToString("\n"))
+        }
+        startActivity(Intent.createChooser(
+            Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, report), "Share error log"
+        ))
     }
 
     private fun hasMic() = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
