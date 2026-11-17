@@ -76,8 +76,14 @@ class VoiceAccessService : AccessibilityService(), PhoneController {
 
     // ---- Actions ----
 
-    override fun tap(elementId: Int): Boolean = click(node(elementId) ?: return false, long = false)
-    override fun longPress(elementId: Int): Boolean = click(node(elementId) ?: return false, long = true)
+    override fun tap(elementId: Int): Boolean {
+        val n = node(elementId) ?: return false
+        return click(n, long = false)
+    }
+    override fun longPress(elementId: Int): Boolean {
+        val n = node(elementId) ?: return false
+        return click(n, long = true)
+    }
 
     private fun click(n: AccessibilityNodeInfo, long: Boolean): Boolean {
         val action = if (long) AccessibilityNodeInfo.ACTION_LONG_CLICK else AccessibilityNodeInfo.ACTION_CLICK
@@ -129,8 +135,8 @@ class VoiceAccessService : AccessibilityService(), PhoneController {
         }
     }
 
-    override fun globalAction(action: String): Boolean = performGlobalAction(
-        when (action) {
+    override fun globalAction(action: String): Boolean {
+        val id = when (action) {
             "back" -> GLOBAL_ACTION_BACK
             "home" -> GLOBAL_ACTION_HOME
             "recents" -> GLOBAL_ACTION_RECENTS
@@ -140,7 +146,8 @@ class VoiceAccessService : AccessibilityService(), PhoneController {
             "screenshot" -> GLOBAL_ACTION_TAKE_SCREENSHOT
             else -> return false
         }
-    )
+        return performGlobalAction(id)
+    }
 
     override fun openApp(name: String): Boolean {
         val q = name.lowercase().trim()
